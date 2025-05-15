@@ -1,4 +1,3 @@
-// src/render-tracker.js
 const renderData = [];
 const componentRenderCounts = new Map();
 let previousFibers = new Map();
@@ -11,8 +10,8 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
 
   devTools.onCommitFiberRoot = (rendererID, root) => {
     console.log("render-tracker.js: Render committed at", new Date().toISOString());
-    const currentFiber = root.current;
     const startTime = performance.now();
+    const currentFiber = root.current;
     traverseFiberTree(currentFiber, previousFibers);
     const duration = performance.now() - startTime;
     console.log("render-tracker.js: Traversal took", duration.toFixed(2), "ms");
@@ -45,9 +44,13 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
     const renderCount = (componentRenderCounts.get(fiberId) || 0) + 1;
     componentRenderCounts.set(fiberId, renderCount);
 
-    // Compare props and state
-    const propsChanges = prevFiber ? getChangedKeys(prevFiber.memoizedProps, fiber.memoizedProps, true) : [];
+    // Compare props and state, excluding functions
+    const propsChanges = prevFiber ? getChangedKeys(prevFiber.memoizedProps, fiber.memoizedProps, true, true) : [];
     const stateChanges = prevFiber ? getChangedKeys(getComponentState(prevFiber), getComponentState(fiber), true) : [];
+
+    // Check for memoized component
+    const isMemoized = fiber.type?.$$typeof === Symbol.for("react.memo");
+    const memoWarning = isMemoized && !propsChanges.length && !stateChanges.length && parentChanged ? "Unnecessary re-render (memoized component)" : null;
 
     // Determine re-render reason
     const reasons = [];
@@ -71,12 +74,13 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
       propsChanges: propsChanges.length ? propsChanges : null,
       stateChanges: stateChanges.length ? stateChanges : null,
       contextChanged: reasons.includes("Context"),
-      parentChanged,
+      parentChanged: !!parentChanged,
       parent: parentName,
       timestamp: new Date().toISOString(),
       trigger: lastAction || "Unknown",
-      duration: prevFiber ? (performance.now() - prevFiber.renderTime).toFixed(2) : null,
+      duration: prevFiber ? (performance.now() - prevFiber.startTime).toFixed(2) : null,
       renderTime: performance.now(),
+      memoWarning,
     };
 
     renderData.push(renderInfo);
@@ -95,7 +99,7 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
       memoizedProps: sanitizeObject({ ...fiber.memoizedProps }),
       memoizedState: sanitizeObject({ ...fiber.memoizedState }),
       dependencies: fiber.dependencies ? sanitizeObject({ ...fiber.dependencies }) : null,
-      renderTime: performance.now(),
+      startTime: performance.now(),
     });
     if (fiber.child) updatePreviousFibers(fiber.child);
     if (fiber.sibling) updatePreviousFibers(fiber.sibling);
@@ -107,8 +111,7 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
     let hook = fiber.memoizedState;
     let index = 0;
     while (hook) {
-      // Only include state from useState (skip useEffect/useMemo)
-      if (hook.memoizedState !== null && typeof hook.memoizedState !== "object") {
+      if (hook.memoizedState !== null) {
         state[`hook${index}`] = sanitizeObject(hook.memoizedState);
       }
       hook = hook.next;
@@ -117,10 +120,11 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
     return state;
   }
 
-  function getChangedKeys(prev, curr, includeValues = false) {
+  function getChangedKeys(prev, curr, includeValues = false, excludeFunctions = false) {
     if (!prev || !curr) return Object.keys(curr || []).map((key) => ({ key, from: null, to: curr[key] }));
     const changes = [];
     for (const key in curr) {
+      if (excludeFunctions && typeof curr[key] === "function") continue;
       if (!deepEqual(prev[key], curr[key])) {
         changes.push(includeValues ? { key, from: prev[key], to: curr[key] } : key);
       }
