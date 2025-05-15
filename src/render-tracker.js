@@ -1,3 +1,4 @@
+// src/render-tracker.js
 const renderData = [];
 const componentRenderCounts = new Map();
 let previousFibers = new Map();
@@ -12,19 +13,19 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
     console.log("render-tracker.js: Render committed at", new Date().toISOString());
     const startTime = performance.now();
     const currentFiber = root.current;
-    traverseFiberTree(currentFiber, previousFibers);
+    traverseFiberTree(currentFiber, previousFibers, startTime);
     const duration = performance.now() - startTime;
     console.log("render-tracker.js: Traversal took", duration.toFixed(2), "ms");
     updatePreviousFibers(currentFiber);
   };
 
-  function traverseFiberTree(fiber, previousFibers, parentChanged = false, parentName = null) {
+  function traverseFiberTree(fiber, previousFibers, commitStartTime, parentChanged = false, parentName = null) {
     if (!fiber) return;
 
     // Skip root fibers with no type
     if (!fiber.type) {
-      if (fiber.child) traverseFiberTree(fiber.child, previousFibers, parentChanged, parentName);
-      if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, parentChanged, parentName);
+      if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, parentChanged, parentName);
+      if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName);
       return;
     }
 
@@ -32,8 +33,8 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
 
     // Process only component fibers
     if (typeof fiber.type !== "function" && !fiber.type?.prototype?.isReactComponent) {
-      if (fiber.child) traverseFiberTree(fiber.child, previousFibers, parentChanged, parentName);
-      if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, parentChanged, parentName);
+      if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, parentChanged, parentName);
+      if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName);
       return;
     }
 
@@ -48,9 +49,14 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
     const propsChanges = prevFiber ? getChangedKeys(prevFiber.memoizedProps, fiber.memoizedProps, true, true) : [];
     const stateChanges = prevFiber ? getChangedKeys(getComponentState(prevFiber), getComponentState(fiber), true) : [];
 
-    // Check for memoized component
+    // Check for memoized component or optimization opportunity
     const isMemoized = fiber.type?.$$typeof === Symbol.for("react.memo");
-    const memoWarning = isMemoized && !propsChanges.length && !stateChanges.length && parentChanged ? "Unnecessary re-render (memoized component)" : null;
+    const memoWarning =
+      isMemoized && !propsChanges.length && !stateChanges.length && parentChanged
+        ? "Unnecessary re-render (memoized component)"
+        : !isMemoized && !propsChanges.length && !stateChanges.length && parentChanged && renderCount > 1
+        ? "Consider React.memo to prevent unnecessary re-renders"
+        : null;
 
     // Determine re-render reason
     const reasons = [];
@@ -78,7 +84,7 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
       parent: parentName,
       timestamp: new Date().toISOString(),
       trigger: lastAction || "Unknown",
-      duration: prevFiber ? (performance.now() - prevFiber.startTime).toFixed(2) : null,
+      duration: (performance.now() - commitStartTime).toFixed(2),
       renderTime: performance.now(),
       memoWarning,
     };
@@ -88,8 +94,8 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
 
     // Propagate parentChanged if this fiber re-rendered
     const fiberChanged = propsChanges.length || stateChanges.length || renderInfo.contextChanged;
-    if (fiber.child) traverseFiberTree(fiber.child, previousFibers, fiberChanged || parentChanged, renderInfo.component);
-    if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, parentChanged, parentName);
+    if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, fiberChanged || parentChanged, renderInfo.component);
+    if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName);
   }
 
   function updatePreviousFibers(fiber) {
@@ -99,7 +105,6 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
       memoizedProps: sanitizeObject({ ...fiber.memoizedProps }),
       memoizedState: sanitizeObject({ ...fiber.memoizedState }),
       dependencies: fiber.dependencies ? sanitizeObject({ ...fiber.dependencies }) : null,
-      startTime: performance.now(),
     });
     if (fiber.child) updatePreviousFibers(fiber.child);
     if (fiber.sibling) updatePreviousFibers(fiber.sibling);
