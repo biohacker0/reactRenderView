@@ -22,26 +22,28 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
     console.log("render-tracker.js: Render frequency", renderFrequency.toFixed(2), "renders/sec");
   };
 
-  function traverseFiberTree(fiber, previousFibers, commitStartTime, parentChanged = false, parentName = null, treeNode = componentTree) {
+  function traverseFiberTree(fiber, previousFibers, commitStartTime, parentChanged = false, parentName = null, treeNode = componentTree, modulePath = "") {
     if (!fiber) return;
 
     if (!fiber.type) {
-      if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, parentChanged, parentName, treeNode);
-      if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName, treeNode);
+      if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, parentChanged, parentName, treeNode, modulePath);
+      if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName, treeNode, modulePath);
       return;
     }
 
     console.log("render-tracker.js: Visiting fiber", fiber.type?.name || fiber.type || "Unknown");
 
     if (typeof fiber.type !== "function" && !fiber.type?.prototype?.isReactComponent) {
-      if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, parentChanged, parentName, treeNode);
-      if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName, treeNode);
+      if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, parentChanged, parentName, treeNode, modulePath);
+      if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName, treeNode, modulePath);
       return;
     }
 
-    const fiberId = fiber.key || `${fiber.type?.name || "Anonymous"}_${fiber.index || 0}`;
-    const prevFiber = previousFibers.get(fiberId);
+    const currentModulePath = modulePath ? `${modulePath}/${fiber.type?.name || "Anonymous"}` : fiber.type?.name || "Anonymous";
+    const fiberId = fiber.key || `${currentModulePath}_${fiber.index || 0}`;
+    const componentName = currentModulePath;
 
+    const prevFiber = previousFibers.get(fiberId);
     const renderCount = (componentRenderCounts.get(fiberId) || 0) + 1;
     componentRenderCounts.set(fiberId, renderCount);
 
@@ -59,21 +61,25 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
     const reasons = [];
     let causedBy = null;
     let propagationPath = parentName ? [parentName] : [];
-    if (!prevFiber) {
+    let contextProvider = null;
+
+    if (!prevFiber || renderCount === 1) {
       reasons.push("Mounted");
     } else {
       if (propsChanges.length) {
         reasons.push(`Props: ${propsChanges.map((c) => c.key).join(", ")}`);
-        // Find parent state changes causing prop changes
         let parentFiber = fiber.return;
         while (parentFiber && !causedBy) {
           const parentId = parentFiber.key || `${parentFiber.type?.name || "Anonymous"}_${parentFiber.index || 0}`;
           const parentPrevFiber = previousFibers.get(parentId);
           if (parentPrevFiber) {
-            const parentStateChanges = getChangedKeys(getComponentState(parentPrevFiber), getComponentState(parentFiber), false);
-            if (parentStateChanges.length) {
-              causedBy = `${parentFiber.type?.name || "Anonymous"}:State:${parentStateChanges.join(", ")}`;
-              propagationPath.push(parentFiber.type?.name || "Anonymous");
+            const parentStateChanges = getChangedKeys(getComponentState(parentPrevFiber), getComponentState(parentFiber), true);
+            const matchedStateKeys = parentStateChanges
+              .filter((change) => propsChanges.some((prop) => prop.key === change.key || JSON.stringify(prop.to) === JSON.stringify(change.to)))
+              .map((change) => change.key);
+            if (matchedStateKeys.length) {
+              causedBy = `${parentFiber.type?.name || "Anonymous"}:State:${matchedStateKeys.join(", ")}`;
+              propagationPath = [parentFiber.type?.name || "Anonymous"];
             }
           }
           parentFiber = parentFiber.return;
@@ -82,7 +88,15 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
       if (stateChanges.length) reasons.push(`State: ${stateChanges.map((c) => c.key).join(", ")}`);
       if (fiber.dependencies && prevFiber.dependencies && !deepEqual(fiber.dependencies, prevFiber.dependencies)) {
         reasons.push("Context");
-        causedBy = causedBy || `${parentName || "Unknown"}:Context`;
+        let providerFiber = fiber.return;
+        while (providerFiber) {
+          if (providerFiber.type?.$$typeof === Symbol.for("react.provider")) {
+            contextProvider = providerFiber.type?.name || "AnonymousProvider";
+            causedBy = causedBy || `${contextProvider}:Context`;
+            break;
+          }
+          providerFiber = providerFiber.return;
+        }
       }
       if (!reasons.length && parentChanged) {
         reasons.push("Parent re-render");
@@ -92,26 +106,26 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
 
     let treeChild = treeNode.children.find((child) => child.id === fiberId);
     if (!treeChild) {
-      treeChild = { id: fiberId, name: fiber.type?.name || "Anonymous", children: [] };
+      treeChild = { id: fiberId, name: componentName, children: [] };
       treeNode.children.push(treeChild);
     }
 
-    // Capture hook dependencies
     const hookDeps = getHookDependencies(fiber);
 
     const renderInfo = {
-      component: fiber.type?.name || "Anonymous",
+      component: componentName,
       renderCount,
       reasons: reasons.length ? reasons.join(", ") : "Unknown",
       propsChanges: propsChanges.length ? propsChanges : null,
       stateChanges: stateChanges.length ? stateChanges : null,
       contextChanged: reasons.includes("Context"),
       contextNames: fiber.dependencies ? getContextNames(fiber.dependencies) : null,
+      contextProvider,
       hookDependencies: hookDeps.length ? hookDeps : null,
       parentChanged: !!parentChanged,
       parent: parentName,
       causedBy,
-      propagationPath: propagationPath.length > 1 ? propagationPath : null,
+      propagationPath: propagationPath.length > 1 ? propagationPath : propagationPath[0] ? [propagationPath[0]] : null,
       timestamp: new Date().toISOString(),
       duration: (performance.now() - commitStartTime).toFixed(2),
       renderTime: performance.now(),
@@ -122,8 +136,8 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
     console.log("render-tracker.js: Render info:", JSON.stringify(renderInfo, null, 2));
 
     const fiberChanged = propsChanges.length || stateChanges.length || renderInfo.contextChanged;
-    if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, fiberChanged || parentChanged, renderInfo.component, treeChild);
-    if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName, treeNode);
+    if (fiber.child) traverseFiberTree(fiber.child, previousFibers, commitStartTime, fiberChanged || parentChanged, componentName, treeChild, currentModulePath);
+    if (fiber.sibling) traverseFiberTree(fiber.sibling, previousFibers, commitStartTime, parentChanged, parentName, treeNode, modulePath);
   }
 
   function updatePreviousFibers(fiber) {
@@ -222,7 +236,10 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
       { event: "submit", selectors: ["form"] },
     ];
 
-    events.forEach(({ event, selectors }) => {
+    const customEvents = window.renderTrackerConfig?.events || [];
+    const allEvents = [...events, ...customEvents];
+
+    allEvents.forEach(({ event, selectors }) => {
       document.addEventListener(
         event,
         (e) => {
@@ -242,6 +259,11 @@ if (window.__REACT_DEVTOOLS_GLOBAL_HOOK__) {
 
   setupActionListeners();
   window.getRenderData = () => ({ renderData, componentTree });
-} else {
-  console.log("render-tracker.js: DevTools hook not found. Ensure React DevTools is enabled.");
+  window.clearRenderData = () => {
+    renderData.length = 0;
+    componentRenderCounts.clear();
+    previousFibers.clear();
+    componentTree.children = [];
+    console.log("render-tracker.js: Render data cleared");
+  };
 }

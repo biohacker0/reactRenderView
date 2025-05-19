@@ -4,12 +4,15 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev:main": "vite --config packages/main-app/vite.config.js",
+    "dev:gods-view": "vite --config packages/gods-view/vite.config.js",
+    "start": "concurrently \"npm run dev:main\" \"npm run dev:gods-view\"",
     "build": "vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
+    "concurrently": "^9.1.2",
     "fast-deep-equal": "^3.1.3",
     "react": "^19.1.0",
     "react-d3-tree": "^3.6.6",
